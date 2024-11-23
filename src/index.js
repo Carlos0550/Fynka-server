@@ -118,16 +118,16 @@ app.post("/login-user", upload.none(), async (req, res) => {
 
         const isPswMatch = await verifyPass(psw, userPassword)
 
-        if (!isPswMatch){
+        if (!isPswMatch) {
             await client.query("ROLLBACK")
             return res.status(401).json({ msg: "La contraseña introducida no es correcta." })
         }
 
         const response2 = await client.query(updateQuery, [today, tomorrow, true, userId])
-    
-        if (response2.rowCount === 0){
+
+        if (response2.rowCount === 0) {
             await client.query("ROLLBACK")
-            return res.status(400).json({msg: "Ocurrió algo inesperado al iniciar sesión, espere unos segundos e intente nuevamente."})
+            return res.status(400).json({ msg: "Ocurrió algo inesperado al iniciar sesión, espere unos segundos e intente nuevamente." })
         }
         const { contrasena, fecha_inicio_sesion, fecha_reestablecer_autenticacion, ...valuesToReturn } = response2.rows[0]
         await client.query("COMMIT")
@@ -140,10 +140,33 @@ app.post("/login-user", upload.none(), async (req, res) => {
     } finally {
         client.release()
     }
+});
+
+app.get("/verifyAuthUser", async (req, res) => {
+    const { username, email } = req.query
+
+    if (!username || !email) return res.status(400).json({ msg: "El servidor no pudo validar su sesión" })
+
+    const client = await clientDb.connect()
+    const query1 = `SELECT * FROM credenciales WHERE nombre_usuario = $1 OR email = $2`
+    try {
+        const response = await client.query(query1, [username, email])
+        if (response.rowCount === 0) return res.status(400).json({ msg: "El servidor no pudo encontrar su usuario, por favor inicie sesión nuevamente." })
+        const auth = response.rows[0].autenticado
+        console.log("Autenticado: ",auth)
+        console.log("Usuario: ", response.rows)
+        if(!auth) return res.status(401).json({msg: "Su sesión caducó, por favor inicie sesión nuevamente."})
+        return res.status(200).json({usrData: response.rows[0]})
+    } catch (error) {
+        console.log(error)
+        return res.status(500).json({ msg:"Error interno del servidor, espere unos segundos e intente nuevamente." })
+    } finally {
+        client.release()
+    }
 })
 
-cron.schedule("* * * * *", async () => {
-    const query1 = `UPDATE credenciales SET autenticado = false WHERE DATE(fecha_reestablecer_autenticacion) >= $1`
+cron.schedule("*/30 * * * *", async () => {
+    const query1 = `UPDATE credenciales SET autenticado = false WHERE DATE(fecha_reestablecer_autenticacion) = $1`
     const client = await clientDb.connect()
     try {
         await client.query("BEGIN")
