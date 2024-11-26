@@ -37,7 +37,7 @@ app.post("/create-user", upload.none(), async (req, res) => {
     const { email, psw } = req.body
     const saltRounds = 10
 
-    if (!email || !username || !psw) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, verifica que todo esté en orden." })
+    if (!email || !psw) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, verifica que todo esté en orden." })
     if (psw.length > 15) return res.status(400).json({ msg: "La contraseña no puede ser mayor a 15 caractéres." })
 
     const client = await clientDb.connect()
