@@ -63,7 +63,7 @@ app.post("/create-user", upload.none(), async (req, res) => {
 
         const hashedPassword = await bcryptjs.hash(psw, saltRounds)
 
-        const result1 = await client.query(insertQuery, [email, username, hashedPassword, true, false])
+        const result1 = await client.query(insertQuery, [email, hashedPassword, true, false])
 
         if (result1.rowCount === 0) {
             await client.query("ROLLBACK")
