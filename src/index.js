@@ -34,7 +34,7 @@ const verifyPass = async (psw, hash) => {
 }
 
 app.post("/create-user", upload.none(), async (req, res) => {
-    const { email,username, psw } = req.body
+    const { email, username, psw } = req.body
     const saltRounds = 10
 
     if (!email || !username || !psw) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, verifica que todo esté en orden." })
@@ -143,8 +143,8 @@ app.post("/login-user", upload.none(), async (req, res) => {
 });
 
 app.get("/verifyAuthUser", async (req, res) => {
-    const {  email } = req.query
-
+    const { email } = req.query
+    console.log("VERIFICANDO USUARIO")
     if (!email) return res.status(400).json({ msg: "El servidor no pudo validar su sesión" })
 
     const client = await clientDb.connect()
@@ -200,7 +200,60 @@ cron.schedule("*/30 * * * *", async () => {
     } finally {
         client.release()
     }
-})
+});
+
+
+app.post("/save-branch", upload.single(), async (req, res) => {
+    const { branchName, branchAddress, branchInfo, editing, userid } = req.body
+    if (!branchName || !branchInfo || !branchAddress || !userid) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, por favor intente nuevamente" })
+
+    let queryIfEditing = "UPDATE sucursales SET nombre = $1, direccion = $2, descripcion = $3 WHERE administrador_id = $4"
+    let queryIfNotEditing = "INSERT INTO sucursales(nombre, direccion, descripcion, administrador_id) VALUES($1,$2,$3,$4)"
+
+    const isEditing = editing === "true" || editing === true;
+
+    const client = await clientDb.connect()
+    console.log(isEditing)
+    try {
+        if (!isEditing) {
+            const result = await client.query(queryIfNotEditing, [branchName, branchAddress, branchInfo, userid])
+            if (result.rowCount === 0) return res.status().json({ msg: "Ocurrió algo insesperado y no se pudo crear la sucursal, intente nuevamente más tarde." })
+            return res.status(200).json({ msg: "Sucursal Creada." })
+        } else {
+            return res.status(501).json({ msg: "Funcionalidad de edición aún no implementada." });
+        }
+    } catch (error) {
+        console.log(error)
+        return res.status(500).json({ msg: "Error interno del servidor, espere unos segundos e intente nuevamente." })
+    }finally{
+        client.release()
+    }
+});
+
+app.get("/get-branches/:administrador_id", async (req, res) => {
+    const { administrador_id } = req.params; 
+    if (!administrador_id) {
+        return res.status(400).json({ msg: "El servidor no recibió el ID del administrador. Por favor, intente nuevamente." });
+    }
+
+    const getQuery = "SELECT * FROM sucursales WHERE administrador_id = $1";
+    const client = await clientDb.connect();
+
+    try {
+        const response = await client.query(getQuery, [administrador_id]);
+        if (response.rowCount === 0) {
+            return res.status(404).json({ msg: "Aún no hay sucursales registradas para este usuario." });
+        }
+
+        return res.status(200).json({ sucursales: response.rows });
+    } catch (error) {
+        console.error("Error al obtener sucursales:", error);
+        return res.status(500).json({ msg: "Error interno del servidor. Por favor, intente nuevamente más tarde." });
+    } finally {
+        client.release();
+    }
+});
+
 
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`)
