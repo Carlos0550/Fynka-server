@@ -16,7 +16,9 @@ dayjs.tz.setDefault("America/Argentina/Buenos_Aires")
 app.use(express.urlencoded({ extended: true }))
 app.use(express.json())
 app.use(express.text())
-app.use(cors())
+app.use(cors({
+    origin: "*"
+}))
 
 const storage = multer.memoryStorage()
 const upload = multer({ storage });
