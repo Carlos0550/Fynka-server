@@ -207,7 +207,7 @@ app.post("/save-branch", upload.single(), async (req, res) => {
     const { branchName, branchAddress, branchInfo, editing, userid } = req.body
     if (!branchName || !branchInfo || !branchAddress || !userid) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, por favor intente nuevamente" })
 
-    let queryIfEditing = "UPDATE sucursales SET nombre = $1, direccion = $2, descripcion = $3 WHERE administrador_id = $4"
+    let queryIfEditing = "UPDATE sucursales SET nombre = $1, direccion = $2, descripcion = $3 WHERE administrador_id = $4 AND id = $5"
     let queryIfNotEditing = "INSERT INTO sucursales(nombre, direccion, descripcion, administrador_id) VALUES($1,$2,$3,$4)"
 
     const isEditing = editing === "true" || editing === true;
@@ -216,27 +216,32 @@ app.post("/save-branch", upload.single(), async (req, res) => {
     console.log(isEditing)
     try {
         if (!isEditing) {
-            const result = await client.query(queryIfNotEditing, [branchName, branchAddress, branchInfo, userid])
+            const result = await client.query(queryIfNotEditing, [branchName, branchAddress, branchInfo || "", userid])
             if (result.rowCount === 0) return res.status().json({ msg: "Ocurrió algo insesperado y no se pudo crear la sucursal, intente nuevamente más tarde." })
             return res.status(200).json({ msg: "Sucursal Creada." })
         } else {
-            return res.status(501).json({ msg: "Funcionalidad de edición aún no implementada." });
+            const { branchId } = req.body
+            if (!branchId) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, por favor intente nuevamente" })
+            const result = await client.query(queryIfEditing, [branchName, branchAddress, branchInfo || "", userid, branchId])
+            if (result.rows === 0) return res.status(404).json({ msg: "Al parecer, esa sucursal no existe, recargue esta sección e intente nuevamente." })
+            return res.status(200).json({ msg: "Sucursal Actualizada" })
+
         }
     } catch (error) {
         console.log(error)
         return res.status(500).json({ msg: "Error interno del servidor, espere unos segundos e intente nuevamente." })
-    }finally{
+    } finally {
         client.release()
     }
 });
 
 app.get("/get-branches/:administrador_id", async (req, res) => {
-    const { administrador_id } = req.params; 
+    const { administrador_id } = req.params;
     if (!administrador_id) {
         return res.status(400).json({ msg: "El servidor no recibió el ID del administrador. Por favor, intente nuevamente." });
     }
 
-    const getQuery = "SELECT * FROM sucursales WHERE administrador_id = $1";
+    const getQuery = "SELECT * FROM sucursales WHERE administrador_id = $1 ORDER BY id ASC";
     const client = await clientDb.connect();
 
     try {
@@ -253,6 +258,35 @@ app.get("/get-branches/:administrador_id", async (req, res) => {
         client.release();
     }
 });
+
+app.delete("/delete-branch/:branchId", async (req, res) => {
+    const { branchId } = req.params
+    if (!branchId) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, por favor intente en unos segundos" })
+
+    const deleteQuerey = `
+        WITH check_conditions AS (
+        SELECT 
+            (SELECT COUNT(*) FROM entregas WHERE sucursal_id = $1) AS entregas_count,
+            (SELECT COUNT(*) FROM deudas WHERE sucursal_id = $1) AS deudas_count
+        )
+        DELETE FROM sucursales
+        WHERE id = $1
+        AND (SELECT entregas_count FROM check_conditions) = 0
+        AND (SELECT deudas_count FROM check_conditions) = 0;
+    `
+    const client = await clientDb.connect()
+    try {
+        const result = await client.query(deleteQuerey, [branchId])
+        if (result.rowCount > 0) return res.status(200).json({ msg: "Sucursal eliminada" })
+        return res.status(400).json({ msg: "Esta sucursal tiene asignada una o más deudas/entregas, no es posible eliminar" })
+
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({ msg: "Error interno del servidor. Por favor, intente nuevamente más tarde." });
+    } finally {
+        client.release();
+    }
+})
 
 
 app.listen(PORT, () => {
