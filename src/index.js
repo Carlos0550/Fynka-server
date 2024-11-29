@@ -291,7 +291,7 @@ app.delete("/delete-branch/:branchId", async (req, res) => {
 })
 
 app.get("/get-clients", async (re, res) => {
-    const query1 = `SELECT * FROM clientes`
+    const query1 = `SELECT * FROM clientes ORDER BY id ASC`
 
     const client = await clientDb.connect()
     try {
@@ -307,43 +307,84 @@ app.get("/get-clients", async (re, res) => {
 });
 
 app.post("/save-client", upload.none(), async (req, res) => {
-    const { clientName, clientAddress, clientEmail, clientDni } = req.body;
+    const { clientName, clientAddress, clientEmail, clientDni, editing, clientId } = req.body;
 
-    if (!clientName || !clientDni ) {
-        return res.status(400).json({ 
-            msg: "El servidor no recibió correctamente algunos datos, por favor intente nuevamente." 
+    if (!clientName || !clientDni || !clientId) {
+        return res.status(400).json({
+            msg: "El servidor no recibió correctamente algunos datos, por favor intente nuevamente."
         });
     }
 
     const query1 = `INSERT INTO clientes(nombre, email, direccion, dni) VALUES($1, $2, $3, $4)`;
-
+    const query2 = `UPDATE clientes SET nombre = $1, email = $2, direccion = $3, DNI = $4 WHERE id = $5`
+    
     let client;
-
+    let isEditing = editing === "true"
+    console.log(isEditing)
     try {
         client = await clientDb.connect();
 
-        const response = await client.query(query1, [
-            clientName,
-            clientEmail || "",
-            clientAddress || "",
-            clientDni
-        ]);
+        if (!isEditing) {
+            const response = await client.query(query2, [
+                clientName,
+                clientEmail || "",
+                clientAddress || "",
+                clientDni
+            ]);
+            if (response.rowCount === 0) {
+                return res.status(400).json({
+                    msg: "Ocurrió un error inesperado y no se pudo guardar el cliente"
+                });
+            }
 
-        if (response.rowCount === 0) {
-            return res.status(400).json({ 
-                msg: "Ocurrió un error inesperado y no se pudo guardar el cliente" 
-            });
+            return res.status(200).json({ msg: "Cliente creado!" });
+        }else{
+            const response = await client.query(query2,[
+                clientName,
+                clientEmail || "",
+                clientAddress || "",
+                clientDni,
+                clientId
+            ])
+            console.log(response)
+            if(response.rowCount > 0) return res.status(200).json({msg: "Datos del cliente actualizados."})
+            return res.status(404).json({msg: "El cliente no fue encontrado, intente actualizar la lista de clientes."})
         }
 
-        return res.status(200).json({ msg: "Cliente creado!" });
     } catch (error) {
-        if (error.code === "23505") { 
+        if (error.code === "23505") {
             return res.status(409).json({ msg: "El cliente ya existe." });
         }
-        console.error(error);
-        return res.status(500).json({ 
-            msg: "Error interno del servidor. Por favor, intente nuevamente más tarde." 
+
+        return res.status(500).json({
+            msg: "Error interno del servidor. Por favor, intente nuevamente más tarde."
         });
+
+    } finally {
+        if (client) client.release();
+    }
+});
+
+app.delete("/delete-client/:clientID", async(req,res)=>{
+    const { clientID } = req.params
+    
+    if(!clientID) return res.status(400).json({msg: "El servidor no recibió correctamente algunos datos."})
+
+    //Ṕor el momento solo eliminar de la tabla clientes
+    //Mas delante cuando se implemente las deudas y entregas, eliminar tambien eso desde aca
+    const query1 = `DELETE FROM clientes WHERE id = $1`
+    let client;
+
+    try {
+        client = await clientDb.connect()
+        const result = await client.query(query1,[clientID])
+        if(result.rowCount > 0) return res.status(200).json({msg: "Cliente eliminado junto con todos sus registros."})
+        return res.status(404).json({msg: "El cliente no fue encontrado, intente actualizar la lista de clientes."})
+    } catch (error) {
+        return res.status(500).json({
+            msg: "Error interno del servidor. Por favor, intente nuevamente más tarde."
+        });
+
     } finally {
         if (client) client.release();
     }
