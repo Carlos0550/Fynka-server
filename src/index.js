@@ -307,15 +307,15 @@ app.get("/get-clients", async (re, res) => {
 });
 
 app.post("/save-client", upload.none(), async (req, res) => {
-    const { clientName, clientAddress, clientEmail, clientDni, branchId } = req.body;
+    const { clientName, clientAddress, clientEmail, clientDni } = req.body;
 
-    if (!clientName || !clientDni || !branchId) {
+    if (!clientName || !clientDni ) {
         return res.status(400).json({ 
             msg: "El servidor no recibió correctamente algunos datos, por favor intente nuevamente." 
         });
     }
 
-    const query1 = `INSERT INTO clientes(sucursal_id, nombre, email, direccion, dni) VALUES($1, $2, $3, $4, $5)`;
+    const query1 = `INSERT INTO clientes(nombre, email, direccion, dni) VALUES($1, $2, $3, $4)`;
 
     let client;
 
@@ -323,7 +323,6 @@ app.post("/save-client", upload.none(), async (req, res) => {
         client = await clientDb.connect();
 
         const response = await client.query(query1, [
-            branchId,
             clientName,
             clientEmail || "",
             clientAddress || "",
