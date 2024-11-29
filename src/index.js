@@ -267,18 +267,20 @@ app.delete("/delete-branch/:branchId", async (req, res) => {
         WITH check_conditions AS (
         SELECT 
             (SELECT COUNT(*) FROM entregas WHERE sucursal_id = $1) AS entregas_count,
-            (SELECT COUNT(*) FROM deudas WHERE sucursal_id = $1) AS deudas_count
+            (SELECT COUNT(*) FROM deudas WHERE sucursal_id = $1) AS deudas_count,
+            (SELECT COUNT(*) FROM clientes WHERE sucursal_id = $1) AS clients_count
         )
         DELETE FROM sucursales
         WHERE id = $1
         AND (SELECT entregas_count FROM check_conditions) = 0
+        AND (SELECT clients_count FROM check_conditions) = 0
         AND (SELECT deudas_count FROM check_conditions) = 0;
     `
     const client = await clientDb.connect()
     try {
         const result = await client.query(deleteQuerey, [branchId])
         if (result.rowCount > 0) return res.status(200).json({ msg: "Sucursal eliminada" })
-        return res.status(400).json({ msg: "Esta sucursal tiene asignada una o más deudas/entregas, no es posible eliminar" })
+        return res.status(400).json({ msg: "Esta sucursal tiene asignada uno o más clientes/deudas/entregas, no es posible eliminar" })
 
     } catch (error) {
         console.error(error);
@@ -288,6 +290,65 @@ app.delete("/delete-branch/:branchId", async (req, res) => {
     }
 })
 
+app.get("/get-clients", async (re, res) => {
+    const query1 = `SELECT * FROM clientes`
+
+    const client = await clientDb.connect()
+    try {
+        const response = await client.query(query1)
+        if (response.rowCount === 0) return res.status(404).json({ msg: "La lista de clientes está vacía" })
+        return res.status(200).json({ msg: "Lista de clientes obtenida!", clients: response.rows })
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({ msg: "Error interno del servidor. Por favor, intente nuevamente más tarde." });
+    } finally {
+        client.release();
+    }
+});
+
+app.post("/save-client", upload.none(), async (req, res) => {
+    const { clientName, clientAddress, clientEmail, clientDni, branchId } = req.body;
+
+    if (!clientName || !clientDni || !branchId) {
+        return res.status(400).json({ 
+            msg: "El servidor no recibió correctamente algunos datos, por favor intente nuevamente." 
+        });
+    }
+
+    const query1 = `INSERT INTO clientes(sucursal_id, nombre, email, direccion, dni) VALUES($1, $2, $3, $4, $5)`;
+
+    let client;
+
+    try {
+        client = await clientDb.connect();
+
+        const response = await client.query(query1, [
+            branchId,
+            clientName,
+            clientEmail || "",
+            clientAddress || "",
+            clientDni
+        ]);
+
+        if (response.rowCount === 0) {
+            return res.status(400).json({ 
+                msg: "Ocurrió un error inesperado y no se pudo guardar el cliente" 
+            });
+        }
+
+        return res.status(200).json({ msg: "Cliente creado!" });
+    } catch (error) {
+        if (error.code === "23505") { 
+            return res.status(409).json({ msg: "El cliente ya existe." });
+        }
+        console.error(error);
+        return res.status(500).json({ 
+            msg: "Error interno del servidor. Por favor, intente nuevamente más tarde." 
+        });
+    } finally {
+        if (client) client.release();
+    }
+})
 
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`)
