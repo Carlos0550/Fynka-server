@@ -144,14 +144,13 @@ app.post("/login-user", upload.none(), async (req, res) => {
 
 app.get("/verifyAuthUser", async (req, res) => {
     const { email } = req.query
-    console.log("VERIFICANDO USUARIO")
     if (!email) return res.status(400).json({ msg: "El servidor no pudo validar su sesión" })
 
     const client = await clientDb.connect()
     const query1 = `SELECT * FROM usuarios WHERE email = $1`
     try {
         const response = await client.query(query1, [email])
-        if (response.rowCount === 0) return res.status(400).json({ msg: "El servidor no pudo encontrar su usuario, por favor inicie sesión nuevamente." })
+        if (response.rowCount === 0) return res.status(404).json({ msg: "El servidor no pudo encontrar su usuario, por favor inicie sesión nuevamente." })
         const auth = response.rows[0].autenticado
 
         if (!auth) return res.status(401).json({ msg: "Su sesión caducó, por favor inicie sesión nuevamente." })
@@ -317,7 +316,7 @@ app.post("/save-client", upload.none(), async (req, res) => {
 
     const query1 = `INSERT INTO clientes(nombre, email, direccion, dni) VALUES($1, $2, $3, $4)`;
     const query2 = `UPDATE clientes SET nombre = $1, email = $2, direccion = $3, DNI = $4 WHERE id = $5`
-    
+
     let client;
     let isEditing = editing === "true"
     console.log(isEditing)
@@ -338,8 +337,8 @@ app.post("/save-client", upload.none(), async (req, res) => {
             }
 
             return res.status(200).json({ msg: "Cliente creado!" });
-        }else{
-            const response = await client.query(query2,[
+        } else {
+            const response = await client.query(query2, [
                 clientName,
                 clientEmail || "",
                 clientAddress || "",
@@ -347,8 +346,8 @@ app.post("/save-client", upload.none(), async (req, res) => {
                 clientId
             ])
             console.log(response)
-            if(response.rowCount > 0) return res.status(200).json({msg: "Datos del cliente actualizados."})
-            return res.status(404).json({msg: "El cliente no fue encontrado, intente actualizar la lista de clientes."})
+            if (response.rowCount > 0) return res.status(200).json({ msg: "Datos del cliente actualizados." })
+            return res.status(404).json({ msg: "El cliente no fue encontrado, intente actualizar la lista de clientes." })
         }
 
     } catch (error) {
@@ -365,10 +364,10 @@ app.post("/save-client", upload.none(), async (req, res) => {
     }
 });
 
-app.delete("/delete-client/:clientID", async(req,res)=>{
+app.delete("/delete-client/:clientID", async (req, res) => {
     const { clientID } = req.params
-    
-    if(!clientID) return res.status(400).json({msg: "El servidor no recibió correctamente algunos datos."})
+
+    if (!clientID) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." })
 
     //Ṕor el momento solo eliminar de la tabla clientes
     //Mas delante cuando se implemente las deudas y entregas, eliminar tambien eso desde aca
@@ -377,9 +376,33 @@ app.delete("/delete-client/:clientID", async(req,res)=>{
 
     try {
         client = await clientDb.connect()
-        const result = await client.query(query1,[clientID])
-        if(result.rowCount > 0) return res.status(200).json({msg: "Cliente eliminado junto con todos sus registros."})
-        return res.status(404).json({msg: "El cliente no fue encontrado, intente actualizar la lista de clientes."})
+        const result = await client.query(query1, [clientID])
+        if (result.rowCount > 0) return res.status(200).json({ msg: "Cliente eliminado junto con todos sus registros." })
+        return res.status(404).json({ msg: "El cliente no fue encontrado, intente actualizar la lista de clientes." })
+    } catch (error) {
+        return res.status(500).json({
+            msg: "Error interno del servidor. Por favor, intente nuevamente más tarde."
+        });
+
+    } finally {
+        if (client) client.release();
+    }
+});
+
+app.get("/get-users/:admID", async (req, res) => {
+    const { admID } = req.params
+
+    if (!admID) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." })
+
+    const query1 = `SELECT * FROM usuarios WHERE admin_id = $1 AND empleado = $2`
+
+    let client
+    try {
+        client = await clientDb.connect()
+
+        const result = await client.query(query1, [admID, true])
+        if (result.rowCount === 0) return res.status(404).json({ msg: "No tiene usuarios asociados" })
+        return res.status(200).json({ msg: "Usuarios obtenidos!", users: result.rows })
     } catch (error) {
         return res.status(500).json({
             msg: "Error interno del servidor. Por favor, intente nuevamente más tarde."
