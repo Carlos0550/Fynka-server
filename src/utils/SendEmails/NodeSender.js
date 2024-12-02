@@ -15,7 +15,7 @@ const sendEmail = async (email, subject, message) => {
             from: process.env.EMAIL_USER,
             to: email,
             subject: subject,
-            text: message
+            html: message
         })
         console.log(info)
         console.log('Email enviado:', info.response);
