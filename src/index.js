@@ -35,69 +35,162 @@ const verifyPass = async (psw, hash) => {
 }
 
 app.post("/create-administrator", upload.none(), async (req, res) => {
-    const { email, username, psw, userdni } = req.body
-    const saltRounds = 10
+    const { email, username, psw, userdni } = req.body;
+    const saltRounds = 10;
 
-    if (!email || !username || !psw || !userdni) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, verifica que todo esté en orden." })
-    if (psw.length > 25) return res.status(400).json({ msg: "La contraseña no puede ser mayor a 15 caractéres." })
-
-    const client = await clientDb.connect()
-    const findAdminQuery = `
-        SELECT * FROM administradores WHERE email = $1
-    `
-
-    const insertQuery = `
-        INSERT INTO administradores(email, nombre_usuario, contrasena, dni) VALUES($1,$2,$3,$4) RETURNING *
-    `
-    const insertQuery1 = `
-        INSERT INTO sucursales(nombre, administrador_id) VALUES ($1, $2)
-    `
-
-    try {
-        await client.query("BEGIN")
-        const result = await client.query(findAdminQuery, [email])
-
-        if (result.rowCount > 0) {
-            await client.query("ROLLBACK")
-            return res.status(400).json({ msg: "El nombre de usuario o correo ya está usado." })
-        }
-
-        const hashedPassword = await bcryptjs.hash(psw, saltRounds)
-
-        const result1 = await client.query(insertQuery, [email, username, hashedPassword, userdni])
-
-        if (result1.rowCount === 0) {
-            await client.query("ROLLBACK")
-            return res.status(500).json({ msg: "Ocurrió un error inesperado, por favor intente nuevamente." })
-        }
-        const nombreSucursal = `Sucursal-${uuidv4()}`
-        const administrador_id = result1.rows[0].id
-        const result2 = await client.query(insertQuery1, [nombreSucursal, administrador_id])
-
-        if (result2.rowCount === 0) {
-            await client.query("ROLLBACK")
-
-            return res.status(400).json({ msg: "Ocurrió un error inesperado al crear su usuario, por favor intente nuevamente." })
-        }
-        
-        const subject = `Le damos la bienvenida a FynkApp ${result1.rows[0].nombre_usuario}`
-        const message = `Por favor, no comparta estos datos con nadie: \n Email: ${email} \n DNI: ${userdni} \n Contrasena: ${psw}`
-        const resultSendEmail = await sendEmail(email, subject, message)
-        if (!resultSendEmail) {
-            await client.query("ROLLBACK")
-            return res.status(500).json({ msg: "Ocurrió un error inesperado al enviar el correo, por favor intente nuevamente." })
-        }
-        await client.query("COMMIT")
-        return res.status(200).json({ msg: "Usuario registrado correctamente." })
-
-    } catch (error) {
-        console.log(error)
-        await client.query("ROLLBACK")
-        return res.status(500).json({ msg: "Error interno del servidor, espere unos segundos e intente nuevamente." })
-    } finally {
-        client.release()
+    // Validación de datos requeridos
+    if (!email || !username || !psw || !userdni) {
+        return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, verifica que todo esté en orden." });
+    }
+    if (psw.length > 25) {
+        return res.status(400).json({ msg: "La contraseña no puede ser mayor a 25 caracteres." });
     }
 
+    const client = await clientDb.connect();
+    
+    // Consulta para verificar si ya existe un administrador con ese email
+    const findAdminQuery = `
+        SELECT * FROM administradores WHERE email = $1
+    `;
+    
+    // Consulta para insertar un nuevo administrador
+    const insertQuery = `
+        INSERT INTO administradores(email, nombre_usuario, contrasena, dni, sucursal_id) VALUES($1,$2,$3,$4,$5) RETURNING *
+    `;
+    
+    // Consulta para insertar una nueva sucursal
+    const insertQuery1 = `
+        INSERT INTO sucursales(nombre) VALUES ($1) RETURNING id
+    `;
+    
+    // Consulta para actualizar la sucursal con el administrador_id
+    const updateSucursalQuery = `
+        UPDATE sucursales SET administrador_id = $1 WHERE id = $2
+    `;
+
+    try {
+        await client.query("BEGIN");
+
+        const result = await client.query(findAdminQuery, [email]);
+        if (result.rowCount > 0) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({ msg: "El nombre de usuario o correo ya está en uso." });
+        }
+
+        const hashedPassword = await bcryptjs.hash(psw, saltRounds);
+
+        const nombreSucursal = `Sucursal-${uuidv4()}`;
+        const resultSucursal = await client.query(insertQuery1, [nombreSucursal]);
+        if (resultSucursal.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.status(500).json({ msg: "Ocurrió un error inesperado al crear la sucursal, por favor intente nuevamente." });
+        }
+
+        const sucursalId = resultSucursal.rows[0].id;
+
+        const resultAdmin = await client.query(insertQuery, [email, username, hashedPassword, userdni, sucursalId]);
+        if (resultAdmin.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.status(500).json({ msg: "Ocurrió un error inesperado al crear el administrador, por favor intente nuevamente." });
+        }
+
+        const administradorId = resultAdmin.rows[0].id;
+
+        const resultUpdateSucursal = await client.query(updateSucursalQuery, [administradorId, sucursalId]);
+        if (resultUpdateSucursal.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.status(500).json({ msg: "Ocurrió un error inesperado al asociar el administrador a la sucursal, por favor intente nuevamente." });
+        }
+
+        const subject = `Bienvenido a FynkApp, ${resultAdmin.rows[0].nombre_usuario}`;
+        const message = `
+        <html lang="es">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Datos de Autenticación</title>
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              background-color: #f9f9f9;
+              margin: 0;
+              padding: 0;
+            }
+            .container {
+              width: 100%;
+              max-width: 600px;
+              margin: 0 auto;
+              background-color: #ffffff;
+              border-radius: 8px;
+              padding: 20px;
+              box-sizing: border-box;
+            }
+            h1 {
+              color: #333;
+              text-align: center;
+              font-size: 24px;
+            }
+            .message {
+              color: #555;
+              font-size: 16px;
+              line-height: 1.5;
+            }
+            .info {
+              margin-top: 20px;
+              padding: 10px;
+              background-color: #f4f4f4;
+              border-radius: 5px;
+              font-size: 16px;
+            }
+            .footer {
+              margin-top: 30px;
+              text-align: center;
+              font-size: 14px;
+              color: #888;
+            }
+            .footer a {
+              color: #0066cc;
+              text-decoration: none;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <h1>Datos de Autenticación de Usuario</h1>
+            <p class="message">Bienvenido a FynkApp, has sido registrado como administrador en la sucursal:</p>
+            
+            <div class="info">
+              <p><strong>Email:</strong> ${email}</p>
+              <p><strong>DNI:</strong> ${psw}</p>
+            </div>
+
+            <p class="message">Por favor, no comparta estos datos con nadie.</p>
+
+            <div class="footer">
+              <p>Si no ha solicitado este registro, por favor contacte con el administrador.</p>
+              <p><a href="#">Soporte</a> | <a href="#">Términos y condiciones</a></p>
+            </div>
+          </div>
+        </body>
+        </html>
+        `;
+
+        const resultSendEmail = await sendEmail(email, subject, message);
+        if (!resultSendEmail) {
+            await client.query("ROLLBACK");
+            return res.status(500).json({ msg: "Ocurrió un error inesperado al enviar el correo, por favor intente nuevamente." });
+        }
+
+        await client.query("COMMIT");
+        return res.status(200).json({ msg: "Administrador y sucursal registrados correctamente." });
+
+    } catch (error) {
+        console.log(error);
+        await client.query("ROLLBACK");
+        return res.status(500).json({ msg: "Error interno del servidor, espere unos segundos e intente nuevamente." });
+    } finally {
+        client.release();
+    }
 });
 
 app.post("/login-user", upload.none(), async (req, res) => {
@@ -316,8 +409,9 @@ app.get("/get-clients", async (re, res) => {
 
 app.post("/save-client", upload.none(), async (req, res) => {
     const { clientName, clientAddress, clientEmail, clientDni, editing, clientId } = req.body;
-    
-    if (!clientName || !clientDni) {
+    const { branchId } = req.query
+
+    if (!clientName || !clientDni || !branchId) {
         return res.status(400).json({
             msg: "El servidor no recibió correctamente algunos datos, por favor intente nuevamente."
         });
@@ -332,35 +426,122 @@ app.post("/save-client", upload.none(), async (req, res) => {
         client = await clientDb.connect();
 
         if (!isEditing) {
+            await client.query("BEGIN");
             const response = await client.query(query1, [
                 clientName,
                 clientEmail || "",
                 clientAddress || "",
                 clientDni
             ]);
+            
             if (response.rowCount === 0) {
+                await client.query("ROLLBACK")
                 return res.status(400).json({
                     msg: "Ocurrió un error inesperado y no se pudo guardar el cliente"
                 });
             }
+            if (clientEmail !== "undefined" && clientEmail !== ""){
+                const getBranch = await client.query(`SELECT * FROM sucursales WHERE id = $1`, [branchId])
+                const branchName = getBranch.rows[0].nombre
+                const subject = `Bienvenido a FynkApp – Automación de Deudas en ${branchName}`
+                const message = `
+                    <html lang="es">
+                    <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>Bienvenido a nuestro Sistema de Automatización de Deudas</title>
+                    <style>
+                        body {
+                        font-family: Arial, sans-serif;
+                        background-color: #f9f9f9;
+                        margin: 0;
+                        padding: 0;
+                        }
+                        .container {
+                        width: 100%;
+                        max-width: 600px;
+                        margin: 0 auto;
+                        background-color: #ffffff;
+                        border-radius: 8px;
+                        padding: 20px;
+                        box-sizing: border-box;
+                        }
+                        h1 {
+                        color: #333;
+                        text-align: center;
+                        font-size: 24px;
+                        }
+                        .message {
+                        color: #555;
+                        font-size: 16px;
+                        line-height: 1.5;
+                        }
+                        .info {
+                        margin-top: 20px;
+                        padding: 10px;
+                        background-color: #f4f4f4;
+                        border-radius: 5px;
+                        font-size: 16px;
+                        }
+                        .footer {
+                        margin-top: 30px;
+                        text-align: center;
+                        font-size: 14px;
+                        color: #888;
+                        }
+                        .footer a {
+                        color: #0066cc;
+                        text-decoration: none;
+                        }
+                    </style>
+                    </head>
+                    <body>
+                    <div class="container">
+                        <h1>¡Bienvenido a nuestro Sistema de Automatización de Deudas!</h1>
+                        <p class="message">Hola <strong>${clientName}</strong>,</p>
+                        <p class="message">¡Gracias por proporcionar tu correo electrónico y registrarte con nosotros!</p>
+                        
+                        <p class="message">Este es un sistema de automatización de deudas, y te notificaremos a través de este medio sobre el estado de tu cuenta en <strong>${branchName}</strong>.</p>
 
+                        <p class="message">Nos alegra contar contigo, y te aseguramos que mantendremos la información de tu cuenta al día para que puedas revisarla de manera fácil y segura.</p>
+
+                        <div class="footer">
+                        <p>Si tienes alguna duda o necesitas más información, no dudes en contactarnos.</p>
+                        <p><a href="#">Soporte</a> | <a href="#">No quiero recibir correos</a></p>
+                        </div>
+                    </div>
+                    </body>
+                    </html>
+                    `;
+                    const resultSendEmail = await sendEmail(clientEmail, subject, message)
+                    if (!resultSendEmail) {
+                        await client.query("ROLLBACK");
+                        return res.status(500).json({ msg: "Error interno del servidor. Por favor, intente nuevamente más tarde." });
+                    }
+            }
+            await client.query("COMMIT");
             return res.status(200).json({ msg: "Cliente creado!" });
         } else {
-            if(!clientId) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, por favor intente en unos segundos" })
-
+            if (!clientId) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, por favor intente en unos segundos" })
+            await client.query("BEGIN");
             const response = await client.query(query2, [
                 clientName,
-                clientEmail || "",
-                clientAddress || "",
+                clientEmail !== "undefined" ? clientEmail : "",
+                clientAddress !== "undefined" ? clientAddress : "",
                 clientDni,
                 clientId
             ])
-            console.log(response)
-            if (response.rowCount > 0) return res.status(200).json({ msg: "Datos del cliente actualizados." })
+            
+            if (response.rowCount > 0) {
+                await client.query("COMMIT")
+                return res.status(200).json({ msg: "Datos del cliente actualizados." })
+            }
+            await client.query("ROLLBACK")
             return res.status(404).json({ msg: "El cliente no fue encontrado, intente actualizar la lista de clientes." })
         }
 
     } catch (error) {
+        await client.query("ROLLBACK");
         if (error.code === "23505") {
             return res.status(409).json({ msg: "El cliente ya existe." });
         }
@@ -409,13 +590,13 @@ app.get("/get-users/:admID", async (req, res) => {
     try {
         client = await clientDb.connect()
 
-        const users= await client.query(query1, [admID])
+        const users = await client.query(query1, [admID])
 
-        if (users.rowCount === 0) return res.status(404).json({ msg: "No tiene usuarios asociados"})
+        if (users.rowCount === 0) return res.status(404).json({ msg: "No tiene usuarios asociados" })
 
-        return res.status(200).json({ msg: "Usuarios obtenidos!", users: users.rows})
+        return res.status(200).json({ msg: "Usuarios obtenidos!", users: users.rows })
     } catch (error) {
-        
+
         console.log(error)
         return res.status(500).json({
             msg: "Error interno del servidor. Por favor, intente nuevamente más tarde."
@@ -426,33 +607,103 @@ app.get("/get-users/:admID", async (req, res) => {
     }
 });
 
-app.post("/create-associate-user", upload.none(), async(req,res)=> {
+app.post("/create-associate-user", upload.none(), async (req, res) => {
 
     const { userDni, userName, userEmail, userPsw, adminId } = req.body
     console.log(userDni, userName, userEmail, userPsw, adminId)
-    if(!userDni || !userName || !userEmail || !userPsw) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." })
+    if (!userDni || !userName || !userEmail || !userPsw) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." })
 
     const query = `INSERT INTO usuarios_asociados (dni, user_name, email, contrasena, administrador_id) VALUES ($1, $2, $3, $4, $5)`
     const securepsw = bcryptjs.hashSync(userPsw, 10)
-    
+
 
     let client
     try {
         client = await clientDb.connect()
         await client.query("BEGIN")
         const result = await client.query(query, [userDni, userName, userEmail, securepsw, adminId])
-        if (result.rowCount > 0){
-            
+        if (result.rowCount > 0) {
+
             const subject = "Datos de acceso a FynkApp"
-            const message = `Un administrador agregó su usuario con los siguientes datos: \n\n Nombre: ${userName} \n Email: ${userEmail} \n Contrasena: ${userPsw} \n\n Por favor, no comparta sus datos con nadie.`
+            const message = `
+            <html lang="es">
+            <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Datos de Autenticación</title>
+            <style>
+                body {
+                font-family: Arial, sans-serif;
+                background-color: #f9f9f9;
+                margin: 0;
+                padding: 0;
+                }
+                .container {
+                width: 100%;
+                max-width: 600px;
+                margin: 0 auto;
+                background-color: #ffffff;
+                border-radius: 8px;
+                padding: 20px;
+                box-sizing: border-box;
+                }
+                h1 {
+                color: #333;
+                text-align: center;
+                font-size: 24px;
+                }
+                .message {
+                color: #555;
+                font-size: 16px;
+                line-height: 1.5;
+                }
+                .info {
+                margin-top: 20px;
+                padding: 10px;
+                background-color: #f4f4f4;
+                border-radius: 5px;
+                font-size: 16px;
+                }
+                .footer {
+                margin-top: 30px;
+                text-align: center;
+                font-size: 14px;
+                color: #888;
+                }
+                .footer a {
+                color: #0066cc;
+                text-decoration: none;
+                }
+            </style>
+            </head>
+            <body>
+            <div class="container">
+                <h1>Datos de Autenticación de Usuario</h1>
+                <p class="message">Un administrador ha agregado su usuario con los siguientes datos:</p>
+                
+                <div class="info">
+                <p><strong>Nombre:</strong> ${userName}</p>
+                <p><strong>Email:</strong> ${userEmail}</p>
+                <p><strong>Contraseña:</strong> ${userPsw}</p>
+                </div>
+
+                <p class="message">Por favor, no comparta estos datos con nadie.</p>
+
+                <div class="footer">
+                <p>Si no ha solicitado este registro, por favor contacte con el administrador.</p>
+                <p><a href="#">Soporte</a> | <a href="#">Términos y condiciones</a></p>
+                </div>
+            </div>
+            </body>
+            </html>`
             const responseSendingEmail = await sendEmail(userEmail, subject, message)
-            if(!responseSendingEmail) {
+            if (!responseSendingEmail) {
                 await client.query("ROLLBACK")
                 return res.status(500).json({ msg: "Error interno del servidor. Por favor, intente nuevamente más tarde." })
             }
             await client.query("COMMIT")
             return res.status(200).json({ msg: "Usuario creado!" })
-        } 
+        }
         await client.query("ROLLBACK")
         return res.status(500).json({ msg: "Error interno del servidor. Por favor, intente nuevamente más tarde." })
     } catch (error) {
@@ -470,9 +721,9 @@ app.post("/create-associate-user", upload.none(), async(req,res)=> {
     }
 });
 
-app.put("/assign-branch", async(req, res) => {
+app.put("/assign-branch", async (req, res) => {
     const { branchId, userId } = req.query
-    if(!branchId || !userId) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." })
+    if (!branchId || !userId) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." })
 
     const query = `UPDATE usuarios_asociados SET sucursal_id = $1 WHERE id = $2`
 
@@ -481,10 +732,10 @@ app.put("/assign-branch", async(req, res) => {
         client = await clientDb.connect()
         await client.query("BEGIN")
         const result = await client.query(query, [branchId, userId])
-        if (result.rowCount > 0){
+        if (result.rowCount > 0) {
             await client.query("COMMIT")
             return res.status(200).json({ msg: "Sucursal asignada!" })
-        } 
+        }
         await client.query("ROLLBACK")
         return res.status(500).json({ msg: "Error interno del servidor. Por favor, intente nuevamente más tarde." })
     } catch (error) {
