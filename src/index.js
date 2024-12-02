@@ -8,6 +8,7 @@ const dayjs = require("dayjs")
 const utc = require("dayjs/plugin/utc.js")
 const timezone = require("dayjs/plugin/timezone.js");
 const bcryptjs = require("bcryptjs")
+const sendEmail = require("./utils/SendEmails/NodeSender.js")
 
 const { v4: uuidv4 } = require('uuid');
 dayjs.extend(utc)
@@ -33,20 +34,20 @@ const verifyPass = async (psw, hash) => {
     return bcryptjs.compare(psw, hash)
 }
 
-app.post("/create-user", upload.none(), async (req, res) => {
-    const { email, username, psw } = req.body
+app.post("/create-administrator", upload.none(), async (req, res) => {
+    const { email, username, psw, userdni } = req.body
     const saltRounds = 10
 
-    if (!email || !username || !psw) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, verifica que todo esté en orden." })
-    if (psw.length > 15) return res.status(400).json({ msg: "La contraseña no puede ser mayor a 15 caractéres." })
+    if (!email || !username || !psw || !userdni) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, verifica que todo esté en orden." })
+    if (psw.length > 25) return res.status(400).json({ msg: "La contraseña no puede ser mayor a 15 caractéres." })
 
     const client = await clientDb.connect()
     const findAdminQuery = `
-        SELECT * FROM usuarios WHERE email = $1
+        SELECT * FROM administradores WHERE email = $1
     `
 
     const insertQuery = `
-        INSERT INTO usuarios(email, nombre_usuario, contrasena, administrador, empleado) VALUES($1,$2,$3,$4,$5) RETURNING *
+        INSERT INTO administradores(email, nombre_usuario, contrasena, dni) VALUES($1,$2,$3,$4) RETURNING *
     `
     const insertQuery1 = `
         INSERT INTO sucursales(nombre, administrador_id) VALUES ($1, $2)
@@ -63,7 +64,7 @@ app.post("/create-user", upload.none(), async (req, res) => {
 
         const hashedPassword = await bcryptjs.hash(psw, saltRounds)
 
-        const result1 = await client.query(insertQuery, [email, username, hashedPassword, true, false])
+        const result1 = await client.query(insertQuery, [email, username, hashedPassword, userdni])
 
         if (result1.rowCount === 0) {
             await client.query("ROLLBACK")
@@ -78,8 +79,16 @@ app.post("/create-user", upload.none(), async (req, res) => {
 
             return res.status(400).json({ msg: "Ocurrió un error inesperado al crear su usuario, por favor intente nuevamente." })
         }
+        
+        const subject = `Le damos la bienvenida a FynkApp ${result1.rows[0].nombre_usuario}`
+        const message = `Por favor, no comparta estos datos con nadie: \n Email: ${email} \n DNI: ${userdni} \n Contrasena: ${psw}`
+        const resultSendEmail = await sendEmail(email, subject, message)
+        if (!resultSendEmail) {
+            await client.query("ROLLBACK")
+            return res.status(500).json({ msg: "Ocurrió un error inesperado al enviar el correo, por favor intente nuevamente." })
+        }
         await client.query("COMMIT")
-        return res.status(200).json({ msg: "Empresa registrada correctamente." })
+        return res.status(200).json({ msg: "Usuario registrado correctamente." })
 
     } catch (error) {
         console.log(error)
@@ -97,11 +106,11 @@ app.post("/login-user", upload.none(), async (req, res) => {
     if ((!email) && !psw) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, verifica que todo esté en orden." })
 
     const getQuery1 = `
-        SELECT id, contrasena, empleado, administrador FROM usuarios WHERE email = $1;
+        SELECT * FROM administradores WHERE email = $1;
     `
 
     const updateQuery = `
-        UPDATE usuarios SET fecha_inicio_sesion = $1, fecha_reestablecer_autenticacion = $2, autenticado = $3 WHERE id = $4 RETURNING *
+        UPDATE administradores SET fecha_inicio_sesion = $1, fecha_reestablecer_autenticacion = $2, autenticado = $3 WHERE id = $4 RETURNING *
     `
     const client = await clientDb.connect()
 
@@ -147,7 +156,7 @@ app.get("/verifyAuthUser", async (req, res) => {
     if (!email) return res.status(400).json({ msg: "El servidor no pudo validar su sesión" })
 
     const client = await clientDb.connect()
-    const query1 = `SELECT * FROM usuarios WHERE email = $1`
+    const query1 = `SELECT * FROM administradores WHERE email = $1`
     try {
         const response = await client.query(query1, [email])
         if (response.rowCount === 0) return res.status(404).json({ msg: "El servidor no pudo encontrar su usuario, por favor inicie sesión nuevamente." })
@@ -169,7 +178,7 @@ app.get("/get-user_info", async (req, res) => {
     if (!userID) return res.status(400).json({ msg: "El servidor no recibió correctamente algún dato" })
     const client = await clientDb.connect()
 
-    const query1 = `SELECT * FROM usuarios WHERE id = $1`
+    const query1 = `SELECT * FROM administradores WHERE id = $1`
     try {
         const response = await client.query(query1, [userID])
         console.log(userID)
@@ -185,7 +194,7 @@ app.get("/get-user_info", async (req, res) => {
 });
 
 cron.schedule("*/30 * * * *", async () => {
-    const query1 = `UPDATE usuarios SET autenticado = false WHERE DATE(fecha_reestablecer_autenticacion) = $1`
+    const query1 = `UPDATE administradores SET autenticado = false WHERE DATE(fecha_reestablecer_autenticacion) = $1`
     const client = await clientDb.connect()
     try {
         await client.query("BEGIN")
@@ -307,8 +316,8 @@ app.get("/get-clients", async (re, res) => {
 
 app.post("/save-client", upload.none(), async (req, res) => {
     const { clientName, clientAddress, clientEmail, clientDni, editing, clientId } = req.body;
-
-    if (!clientName || !clientDni || !clientId) {
+    
+    if (!clientName || !clientDni) {
         return res.status(400).json({
             msg: "El servidor no recibió correctamente algunos datos, por favor intente nuevamente."
         });
@@ -319,12 +328,11 @@ app.post("/save-client", upload.none(), async (req, res) => {
 
     let client;
     let isEditing = editing === "true"
-    console.log(isEditing)
     try {
         client = await clientDb.connect();
 
         if (!isEditing) {
-            const response = await client.query(query2, [
+            const response = await client.query(query1, [
                 clientName,
                 clientEmail || "",
                 clientAddress || "",
@@ -338,6 +346,8 @@ app.post("/save-client", upload.none(), async (req, res) => {
 
             return res.status(200).json({ msg: "Cliente creado!" });
         } else {
+            if(!clientId) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, por favor intente en unos segundos" })
+
             const response = await client.query(query2, [
                 clientName,
                 clientEmail || "",
@@ -391,19 +401,95 @@ app.delete("/delete-client/:clientID", async (req, res) => {
 
 app.get("/get-users/:admID", async (req, res) => {
     const { admID } = req.params
-
     if (!admID) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." })
 
-    const query1 = `SELECT * FROM usuarios WHERE admin_id = $1 AND empleado = $2`
+    const query1 = `SELECT * FROM usuarios_asociados WHERE administrador_id = $1`
 
     let client
     try {
         client = await clientDb.connect()
 
-        const result = await client.query(query1, [admID, true])
-        if (result.rowCount === 0) return res.status(404).json({ msg: "No tiene usuarios asociados" })
-        return res.status(200).json({ msg: "Usuarios obtenidos!", users: result.rows })
+        const users= await client.query(query1, [admID])
+
+        if (users.rowCount === 0) return res.status(404).json({ msg: "No tiene usuarios asociados"})
+
+        return res.status(200).json({ msg: "Usuarios obtenidos!", users: users.rows})
     } catch (error) {
+        
+        console.log(error)
+        return res.status(500).json({
+            msg: "Error interno del servidor. Por favor, intente nuevamente más tarde."
+        });
+
+    } finally {
+        if (client) client.release();
+    }
+});
+
+app.post("/create-associate-user", upload.none(), async(req,res)=> {
+
+    const { userDni, userName, userEmail, userPsw, adminId } = req.body
+    console.log(userDni, userName, userEmail, userPsw, adminId)
+    if(!userDni || !userName || !userEmail || !userPsw) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." })
+
+    const query = `INSERT INTO usuarios_asociados (dni, user_name, email, contrasena, administrador_id) VALUES ($1, $2, $3, $4, $5)`
+    const securepsw = bcryptjs.hashSync(userPsw, 10)
+    
+
+    let client
+    try {
+        client = await clientDb.connect()
+        await client.query("BEGIN")
+        const result = await client.query(query, [userDni, userName, userEmail, securepsw, adminId])
+        if (result.rowCount > 0){
+            
+            const subject = "Datos de acceso a FynkApp"
+            const message = `Un administrador agregó su usuario con los siguientes datos: \n\n Nombre: ${userName} \n Email: ${userEmail} \n Contrasena: ${userPsw} \n\n Por favor, no comparta sus datos con nadie.`
+            const responseSendingEmail = await sendEmail(userEmail, subject, message)
+            if(!responseSendingEmail) {
+                await client.query("ROLLBACK")
+                return res.status(500).json({ msg: "Error interno del servidor. Por favor, intente nuevamente más tarde." })
+            }
+            await client.query("COMMIT")
+            return res.status(200).json({ msg: "Usuario creado!" })
+        } 
+        await client.query("ROLLBACK")
+        return res.status(500).json({ msg: "Error interno del servidor. Por favor, intente nuevamente más tarde." })
+    } catch (error) {
+        console.log(error)
+        if (error.code === "23505") {
+            return res.status(409).json({ msg: "Los datos proporcionados ya pertencen a otro usuario." });
+        }
+        await client.query("ROLLBACK")
+        return res.status(500).json({
+            msg: "Error interno del servidor. Por favor, intente nuevamente más tarde."
+        });
+
+    } finally {
+        if (client) client.release();
+    }
+});
+
+app.put("/assign-branch", async(req, res) => {
+    const { branchId, userId } = req.query
+    if(!branchId || !userId) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." })
+
+    const query = `UPDATE usuarios_asociados SET sucursal_id = $1 WHERE id = $2`
+
+    let client
+    try {
+        client = await clientDb.connect()
+        await client.query("BEGIN")
+        const result = await client.query(query, [branchId, userId])
+        if (result.rowCount > 0){
+            await client.query("COMMIT")
+            return res.status(200).json({ msg: "Sucursal asignada!" })
+        } 
+        await client.query("ROLLBACK")
+        return res.status(500).json({ msg: "Error interno del servidor. Por favor, intente nuevamente más tarde." })
+    } catch (error) {
+        console.log(error)
+        await client.query("ROLLBACK")
         return res.status(500).json({
             msg: "Error interno del servidor. Por favor, intente nuevamente más tarde."
         });
