@@ -9,6 +9,9 @@ const utc = require("dayjs/plugin/utc.js")
 const timezone = require("dayjs/plugin/timezone.js");
 const bcryptjs = require("bcryptjs")
 const sendEmail = require("./utils/SendEmails/NodeSender.js")
+const {encrypt, encryptDeterministic} = require("./utils/Encriptacion/encrypt.js")
+const {decrypt, decryptDeterministic} = require("./utils/Encriptacion/decrypt.js")
+
 
 const { v4: uuidv4 } = require('uuid');
 dayjs.extend(utc)
@@ -38,7 +41,6 @@ app.post("/create-administrator", upload.none(), async (req, res) => {
     const { email, username, psw, userdni } = req.body;
     const saltRounds = 10;
 
-    // Validación de datos requeridos
     if (!email || !username || !psw || !userdni) {
         return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, verifica que todo esté en orden." });
     }
@@ -48,22 +50,18 @@ app.post("/create-administrator", upload.none(), async (req, res) => {
 
     const client = await clientDb.connect();
     
-    // Consulta para verificar si ya existe un administrador con ese email
     const findAdminQuery = `
         SELECT * FROM administradores WHERE email = $1
     `;
     
-    // Consulta para insertar un nuevo administrador
     const insertQuery = `
         INSERT INTO administradores(email, nombre_usuario, contrasena, dni, sucursal_id) VALUES($1,$2,$3,$4,$5) RETURNING *
     `;
     
-    // Consulta para insertar una nueva sucursal
     const insertQuery1 = `
         INSERT INTO sucursales(nombre) VALUES ($1) RETURNING id
     `;
     
-    // Consulta para actualizar la sucursal con el administrador_id
     const updateSucursalQuery = `
         UPDATE sucursales SET administrador_id = $1 WHERE id = $2
     `;
@@ -78,6 +76,8 @@ app.post("/create-administrator", upload.none(), async (req, res) => {
         }
 
         const hashedPassword = await bcryptjs.hash(psw, saltRounds);
+        const encrypted_dni = encrypt(userdni)
+        const encriptedEmail = encryptDeterministic(email)
 
         const nombreSucursal = `Sucursal-${uuidv4()}`;
         const resultSucursal = await client.query(insertQuery1, [nombreSucursal]);
@@ -88,7 +88,7 @@ app.post("/create-administrator", upload.none(), async (req, res) => {
 
         const sucursalId = resultSucursal.rows[0].id;
 
-        const resultAdmin = await client.query(insertQuery, [email, username, hashedPassword, userdni, sucursalId]);
+        const resultAdmin = await client.query(insertQuery, [encriptedEmail, username, hashedPassword, encrypted_dni, sucursalId]);
         if (resultAdmin.rowCount === 0) {
             await client.query("ROLLBACK");
             return res.status(500).json({ msg: "Ocurrió un error inesperado al crear el administrador, por favor intente nuevamente." });
@@ -158,13 +158,13 @@ app.post("/create-administrator", upload.none(), async (req, res) => {
           <div class="container">
             <h1>Datos de Autenticación de Usuario</h1>
             <p class="message">Bienvenido a FynkApp, has sido registrado como administrador en la sucursal:</p>
-            
+            <p class="message">Por favor, no comparta estos datos con nadie.</p>
             <div class="info">
               <p><strong>Email:</strong> ${email}</p>
-              <p><strong>DNI:</strong> ${psw}</p>
+              <p><strong>Contraseña:</strong> ${psw}</p>
             </div>
 
-            <p class="message">Por favor, no comparta estos datos con nadie.</p>
+            
 
             <div class="footer">
               <p>Si no ha solicitado este registro, por favor contacte con el administrador.</p>
@@ -209,9 +209,10 @@ app.post("/login-user", upload.none(), async (req, res) => {
 
     try {
         await client.query("BEGIN")
-        const response1 = await client.query(getQuery1, [email])
-        if (response1.rowCount === 0) return res.status(404).json({ msg: "El usuario no existe en nuestros registros." })
+        const encryptEmailToVerification = encryptDeterministic(email)
 
+        const response1 = await client.query(getQuery1, [encryptEmailToVerification])
+        if (response1.rowCount === 0) return res.status(404).json({ msg: "El usuario no existe en nuestros registros." })
         const userPassword = response1.rows[0].contrasena
         const userId = response1.rows[0].id
 
@@ -219,7 +220,6 @@ app.post("/login-user", upload.none(), async (req, res) => {
         const tomorrow = dayjs().add(1, "day")
 
         const isPswMatch = await verifyPass(psw, userPassword)
-
         if (!isPswMatch) {
             await client.query("ROLLBACK")
             return res.status(401).json({ msg: "La contraseña introducida no es correcta." })
@@ -398,7 +398,10 @@ app.get("/get-clients", async (re, res) => {
     try {
         const response = await client.query(query1)
         if (response.rowCount === 0) return res.status(404).json({ msg: "La lista de clientes está vacía" })
-        return res.status(200).json({ msg: "Lista de clientes obtenida!", clients: response.rows })
+        const otherValues = response.rows.map(({ email, dni, ...rest })=>{
+            return rest;
+        })
+        return res.status(200).json({ msg: "Lista de clientes obtenida!", clients: otherValues })
     } catch (error) {
         console.error(error);
         return res.status(500).json({ msg: "Error interno del servidor. Por favor, intente nuevamente más tarde." });
@@ -427,11 +430,13 @@ app.post("/save-client", upload.none(), async (req, res) => {
 
         if (!isEditing) {
             await client.query("BEGIN");
+            const encryptedDni = encrypt(clientDni)
+            const hashedEmail = clientEmail ?  encryptDeterministic(clientEmail) : ""
             const response = await client.query(query1, [
                 clientName,
-                clientEmail || "",
+                hashedEmail || "",
                 clientAddress || "",
-                clientDni
+                encryptedDni
             ]);
             
             if (response.rowCount === 0) {
@@ -748,6 +753,34 @@ app.put("/assign-branch", async (req, res) => {
     } finally {
         if (client) client.release();
     }
+});
+
+app.get("/get-client-account", async(req,res)=>{
+    const { branchId, clientId } = req.query
+
+    if(!branchId || !clientId) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." })
+    const getQuery1 = `SELECT * FROM deudas WHERE cliente_id = $1 AND sucursal_id = $2`
+    const getQuery2 = `SELECT * FROM entregas WHERE cliente_id = $1 AND sucursal_id = $2`
+    let client
+    try {
+        client = await clientDb.connect()
+        const [deudas, entregas] = await Promise.all([
+            client.query(getQuery1, [clientId, branchId]),
+            client.query(getQuery2, [clientId, branchId])
+        ])
+        if (deudas.rowCount > 0) {
+            return res.status(200).json({ msg: "Cliente obtenido!", debts: deudas.rows, delivers: entregas.rows })
+        }
+        return res.status(404).json({ msg: "Este cliente no tiene deudas o una cuenta asociada a esta sucursal." })
+    } catch (error) {
+        console.log(error)
+        return res.status(500).json({
+            msg: "Error interno del servidor. Por favor, intente nuevamente más tarde."
+        })
+    }finally{
+        if(client) client.release()
+    }
+    
 })
 
 app.listen(PORT, () => {
