@@ -781,6 +781,54 @@ app.get("/get-client-account", async(req,res)=>{
         if(client) client.release()
     }
     
+});
+
+app.post("/save-debt",upload.none(), async(req,res)=> {
+    const { clientID, branchID, adminID, userID, productDetails, productsArray, debtDate, debtAmount } = req.body
+    if(!productsArray || !debtDate || !debtAmount || !clientID || !branchID) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." })
+    console.log("adminid: ",adminID, "userid: ", userID)
+    const query1 = `INSERT INTO descripciones_deudas(texto) VALUES ($1) RETURNING id`
+    const query2 = `INSERT INTO deudas
+    (cliente_id, sucursal_id, administrador_id, user_id, descripcion_id, detalle_productos, fecha_compra, vencimiento, monto_total)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) `
+    console.log(productDetails)
+    let client;
+    try {
+        client = await clientDb.connect()
+        await client.query("BEGIN")
+        const response = await client.query(query1,[productDetails || "Sin descripción"])
+
+        if(response.rowCount === 0){
+            await client.query("ROLLBACK")
+            return res.status(400).json({msg: "Ocurrió un error inesperado al intentar guardar la deuda"})
+        }
+
+        const descriptionID = response.rows[0].id
+        const response2 = await client.query(query2, [clientID, 
+            branchID, 
+            adminID && adminID.trim() !== "" ? adminID : null, 
+            userID && userID.trim() !== "" ? userID : null , 
+            descriptionID, 
+            productsArray, 
+            debtDate, 
+            dayjs(debtDate).add(1, "month"), 
+            debtAmount
+        ])
+
+        if(response2.rowCount === 0){
+            await client.query("ROLLBACK")
+            return res.status(400).json({msg: "Ocurrido un error inesperado al intentar guardar la deuda"})
+        }
+
+        await client.query("COMMIT")
+        return res.status(200).json({msg: `Deuda guardada exitosamente, próximo vencimiento el ${dayjs(debtDate).add(1, "month").format("DD/MM/YYYY")}`})
+    } catch (error) {
+        console.log(error)
+        await client.query("ROLLBACK")
+        return res.status(500).json({
+            msg: "Error interno del servidor. Por favor, intente nuevamente más tarde."
+        });
+    }
 })
 
 app.listen(PORT, () => {
