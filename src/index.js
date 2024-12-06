@@ -80,7 +80,7 @@ app.post("/create-administrator", upload.none(), async (req, res) => {
         const encriptedEmail = encryptDeterministic(email)
 
         const nombreSucursal = `Sucursal-${uuidv4()}`;
-        const resultSucursal = await client.query(insertQuery1, [nombreSucursal]);
+        const resultSucursal = await client.query(insertQuery1, [nombreSucursal.split("-").slice(0,3).join("-")]);
         if (resultSucursal.rowCount === 0) {
             await client.query("ROLLBACK");
             return res.status(500).json({ msg: "Ocurrió un error inesperado al crear la sucursal, por favor intente nuevamente." });
@@ -306,7 +306,7 @@ cron.schedule("*/30 * * * *", async () => {
 
 app.post("/save-branch", upload.single(), async (req, res) => {
     const { branchName, branchAddress, branchInfo, editing, userid } = req.body
-    if (!branchName || !branchInfo || !branchAddress || !userid) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, por favor intente nuevamente" })
+    if (!branchName || !userid) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, por favor intente nuevamente" })
 
     let queryIfEditing = "UPDATE sucursales SET nombre = $1, direccion = $2, descripcion = $3 WHERE administrador_id = $4 AND id = $5"
     let queryIfNotEditing = "INSERT INTO sucursales(nombre, direccion, descripcion, administrador_id) VALUES($1,$2,$3,$4)"
@@ -791,7 +791,7 @@ app.post("/save-debt",upload.none(), async(req,res)=> {
     const query2 = `INSERT INTO deudas
     (cliente_id, sucursal_id, administrador_id, user_id, descripcion_id, detalle_productos, fecha_compra, vencimiento, monto_total)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) `
-    console.log(productDetails)
+    
     let client;
     try {
         client = await clientDb.connect()
