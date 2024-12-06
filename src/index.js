@@ -755,32 +755,93 @@ app.put("/assign-branch", async (req, res) => {
     }
 });
 
-app.get("/get-client-account", async(req,res)=>{
-    const { branchId, clientId } = req.query
+app.get("/get-client-account", async (req, res) => {
+    const { branchId, clientId } = req.query;
 
-    if(!branchId || !clientId) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." })
-    const getQuery1 = `SELECT * FROM deudas WHERE cliente_id = $1 AND sucursal_id = $2`
-    const getQuery2 = `SELECT * FROM entregas WHERE cliente_id = $1 AND sucursal_id = $2`
-    let client
+    if (!branchId || !clientId) {
+        return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." });
+    }
+
+    const getQuery1 = `SELECT * FROM deudas WHERE cliente_id = $1 AND sucursal_id = $2`;
+    const getQuery2 = `SELECT * FROM entregas WHERE cliente_id = $1 AND sucursal_id = $2`;
+    const getDescriptionsQuery = `
+        SELECT id, texto 
+        FROM descripciones_deudas 
+        WHERE id = ANY($1::int[])
+    `;
+
+    const getAdministradoresQuery = `
+        SELECT nombre_usuario,id FROM administradores WHERE id = ANY($1::int[])
+    `
+    const getUsersQuery = `
+        SELECT user_name,id FROM usuarios_asociados WHERE id = ANY($1::int[])
+    `
+
+    let client;
     try {
-        client = await clientDb.connect()
-        const [deudas, entregas] = await Promise.all([
+        client = await clientDb.connect();
+        
+        const [deudasResult, entregasResult] = await Promise.all([
             client.query(getQuery1, [clientId, branchId]),
             client.query(getQuery2, [clientId, branchId])
-        ])
-        if (deudas.rowCount > 0) {
-            return res.status(200).json({ msg: "Cliente obtenido!", debts: deudas.rows, delivers: entregas.rows })
+        ]);
+
+        const deudas = deudasResult.rows;
+        const entregas = entregasResult.rows;
+
+        if (deudas.length > 0) {
+            const descripcionIds = deudas.map(deuda => deuda.descripcion_id).filter(Boolean);
+            const adminsIDs = deudas.map(deuda => deuda.administrador_id).filter(Boolean);
+            const usersIDs = deudas.map(deuda => deuda.user_id).filter(Boolean);
+
+            const [descriptionsResult, administradoresResult, usuariosResult] = await Promise.all([
+                client.query(getDescriptionsQuery, [descripcionIds]),
+                client.query(getAdministradoresQuery, [adminsIDs]),
+                client.query(getUsersQuery, [usersIDs])
+            ]);
+
+            const descriptionsMap = descriptionsResult.rows.reduce((map, desc) => {
+                map[desc.id] = desc.texto;
+                return map;
+            }, {});
+
+            const administradoresMap = administradoresResult.rows.reduce((map, admin)=> {
+                map[admin.id] = admin.nombre_usuario;
+                return map
+            },{})
+
+            const usuariosMap = usuariosResult.rows.reduce((map, user) => {
+                map[user.id] = user.user_name;
+                return map
+            },{})
+
+            
+
+            deudas.forEach(deuda => {
+                deuda.descripcion = descriptionsMap[deuda.descripcion_id] || null;
+                if(deuda.administrador_id) deuda.responsable = administradoresMap[parseInt(deuda.administrador_id)] || null;
+                if(deuda.user_id) deuda.responsable = usuariosMap[parseInt(deuda.user_id)] || null;
+                
+            });
+
+            return res.status(200).json({ 
+                msg: "Cliente obtenido!", 
+                debts: deudas, 
+                delivers: entregas 
+            });
         }
-        return res.status(404).json({ msg: "Este cliente no tiene deudas o una cuenta asociada a esta sucursal." })
+
+        return res.status(404).json({ 
+            msg: "Este cliente no tiene deudas o una cuenta asociada a esta sucursal." 
+        });
     } catch (error) {
-        console.log(error)
+        console.error(error);
         return res.status(500).json({
             msg: "Error interno del servidor. Por favor, intente nuevamente más tarde."
-        })
-    }finally{
-        if(client) client.release()
+        });
+    } finally {
+        if (client) client.release();
     }
-    
 });
 
 app.post("/save-debt",upload.none(), async(req,res)=> {
@@ -829,7 +890,8 @@ app.post("/save-debt",upload.none(), async(req,res)=> {
             msg: "Error interno del servidor. Por favor, intente nuevamente más tarde."
         });
     }
-})
+});
+
 
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`)
