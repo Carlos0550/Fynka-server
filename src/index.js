@@ -286,24 +286,6 @@ app.get("/get-user_info", async (req, res) => {
     }
 });
 
-cron.schedule("*/30 * * * *", async () => {
-    const query1 = `UPDATE administradores SET autenticado = false WHERE DATE(fecha_reestablecer_autenticacion) = $1`
-    const client = await clientDb.connect()
-    try {
-        await client.query("BEGIN")
-        await client.query(query1, [dayjs().format("YYYY-MM-DD")])
-        await client.query("COMMIT")
-        console.log("TAREAS CRON FINALIZADAS SIN PROBLEMAS")
-    } catch (error) {
-        await client.query("ROLLBACK")
-        console.log(error)
-        console.log(error.message)
-    } finally {
-        client.release()
-    }
-});
-
-
 app.post("/save-branch", upload.single(), async (req, res) => {
     const { branchName, branchAddress, branchInfo, editing, userid } = req.body
     if (!branchName || !userid) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos, por favor intente nuevamente" })
@@ -789,6 +771,17 @@ app.get("/get-client-account", async (req, res) => {
         const deudas = deudasResult.rows;
         const entregas = entregasResult.rows;
 
+        const totalDeudas = deudas.reduce((acc,deuda)=> {
+            return acc + parseFloat(deuda.monto_total)
+        },0)
+        const totalEntregas = entregas.reduce((acc, entrega) => {
+            console.log(entrega)
+            return acc + parseFloat(entrega.monto)
+        },0)
+
+        const subTotal = parseFloat(totalDeudas - totalEntregas).toLocaleString("es-AR",{style:"currency", "currency": "ARS"})
+
+
         if (deudas.length > 0) {
             const descripcionIds = deudas.map(deuda => deuda.descripcion_id).filter(Boolean);
             const adminsIDs = deudas.map(deuda => deuda.administrador_id).filter(Boolean);
@@ -823,11 +816,12 @@ app.get("/get-client-account", async (req, res) => {
                 if(deuda.user_id) deuda.responsable = usuariosMap[parseInt(deuda.user_id)] || null;
                 
             });
-
+console.log(subTotal)
             return res.status(200).json({ 
                 msg: "Cliente obtenido!", 
                 debts: deudas, 
-                delivers: entregas 
+                delivers: entregas,
+                totalAccount: subTotal
             });
         }
 
@@ -892,6 +886,64 @@ app.post("/save-debt",upload.none(), async(req,res)=> {
     }
 });
 
+app.post("/save-deliver",upload.none(), async(req,res)=> {
+    const { clientID, branchID, adminID, userID, deliverDate, deliverAmount } = req.body
+    if(!clientID || !branchID || !deliverAmount || !deliverDate) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." })
+
+    const query1 = `INSERT INTO entregas(cliente_id, sucursal_id, administrador_id, user_id, fecha, monto) VALUES ($1, $2, $3, $4, $5, $6)`
+    const query2 = `UPDATE deudas SET vencido = $1 WHERE cliente_id = $2 AND sucursal_id = $3`
+    let client;
+    try {
+        client = await clientDb.connect()
+        await client.query("BEGIN")
+        const response = await client.query(query1, 
+            [
+                clientID, 
+                branchID, 
+                adminID && adminID.trim() !== "" ? adminID : null, 
+                userID && userID.trim() !== "" ? userID : null, 
+                deliverDate, 
+                deliverAmount
+            ])
+        if(response.rowCount === 0){
+            await client.query("ROLLBACK")
+            return res.status(400).json({msg: "Ocurrido un error inesperado al intentar guardar la entrega"})
+        }
+
+        const response2 = await client.query(query2, [false, clientID, branchID])
+        if(response2.rowCount === 0){
+            await client.query("ROLLBACK")
+            return res.status(400).json({msg: "Ocurrido un error inesperado al intentar guardar la entrega"})
+        }  
+        await client.query("COMMIT")
+        return res.status(200).json({msg: "Entrega guardada exitosamente"})
+    } catch (error) {
+        console.log(error)
+        await client.query("ROLLBACK")
+        return res.status(500).json({
+            msg: "Error interno del servidor. Por favor, intente nuevamente más tarde."
+        });
+    }finally{
+        if(client) client.release()
+    }
+})
+
+cron.schedule("*/30 * * * *", async () => {
+    const query1 = `UPDATE administradores SET autenticado = false WHERE DATE(fecha_reestablecer_autenticacion) = $1`
+    const client = await clientDb.connect()
+    try {
+        await client.query("BEGIN")
+        await client.query(query1, [dayjs().format("YYYY-MM-DD")])
+        await client.query("COMMIT")
+        console.log("TAREAS CRON FINALIZADAS SIN PROBLEMAS")
+    } catch (error) {
+        await client.query("ROLLBACK")
+        console.log(error)
+        console.log(error.message)
+    } finally {
+        client.release()
+    }
+});
 
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`)
