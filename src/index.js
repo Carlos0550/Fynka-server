@@ -9,9 +9,10 @@ const utc = require("dayjs/plugin/utc.js")
 const timezone = require("dayjs/plugin/timezone.js");
 const bcryptjs = require("bcryptjs")
 const sendEmail = require("./utils/SendEmails/NodeSender.js")
-const {encrypt, encryptDeterministic} = require("./utils/Encriptacion/encrypt.js")
-const {decrypt, decryptDeterministic} = require("./utils/Encriptacion/decrypt.js")
+const { encrypt, encryptDeterministic } = require("./utils/Encriptacion/encrypt.js")
+const { decrypt, decryptDeterministic } = require("./utils/Encriptacion/decrypt.js")
 
+const clientsRoutes = require("./routes/Clients/clients.routes.js")
 
 const { v4: uuidv4 } = require('uuid');
 dayjs.extend(utc)
@@ -49,19 +50,19 @@ app.post("/create-administrator", upload.none(), async (req, res) => {
     }
 
     const client = await clientDb.connect();
-    
+
     const findAdminQuery = `
         SELECT * FROM administradores WHERE email = $1
     `;
-    
+
     const insertQuery = `
         INSERT INTO administradores(email, nombre_usuario, contrasena, dni, sucursal_id) VALUES($1,$2,$3,$4,$5) RETURNING *
     `;
-    
+
     const insertQuery1 = `
         INSERT INTO sucursales(nombre) VALUES ($1) RETURNING id
     `;
-    
+
     const updateSucursalQuery = `
         UPDATE sucursales SET administrador_id = $1 WHERE id = $2
     `;
@@ -80,7 +81,7 @@ app.post("/create-administrator", upload.none(), async (req, res) => {
         const encriptedEmail = encryptDeterministic(email)
 
         const nombreSucursal = `Sucursal-${uuidv4()}`;
-        const resultSucursal = await client.query(insertQuery1, [nombreSucursal.split("-").slice(0,3).join("-")]);
+        const resultSucursal = await client.query(insertQuery1, [nombreSucursal.split("-").slice(0, 3).join("-")]);
         if (resultSucursal.rowCount === 0) {
             await client.query("ROLLBACK");
             return res.status(500).json({ msg: "Ocurrió un error inesperado al crear la sucursal, por favor intente nuevamente." });
@@ -380,7 +381,7 @@ app.get("/get-clients", async (re, res) => {
     try {
         const response = await client.query(query1)
         if (response.rowCount === 0) return res.status(404).json({ msg: "La lista de clientes está vacía" })
-        const otherValues = response.rows.map(({ email, dni, ...rest })=>{
+        const otherValues = response.rows.map(({ email, dni, ...rest }) => {
             return rest;
         })
         return res.status(200).json({ msg: "Lista de clientes obtenida!", clients: otherValues })
@@ -413,21 +414,21 @@ app.post("/save-client", upload.none(), async (req, res) => {
         if (!isEditing) {
             await client.query("BEGIN");
             const encryptedDni = encrypt(clientDni)
-            const hashedEmail = clientEmail ?  encryptDeterministic(clientEmail) : ""
+            const hashedEmail = clientEmail ? encryptDeterministic(clientEmail) : ""
             const response = await client.query(query1, [
                 clientName,
                 hashedEmail || "",
                 clientAddress || "",
                 encryptedDni
             ]);
-            
+
             if (response.rowCount === 0) {
                 await client.query("ROLLBACK")
                 return res.status(400).json({
                     msg: "Ocurrió un error inesperado y no se pudo guardar el cliente"
                 });
             }
-            if (clientEmail !== "undefined" && clientEmail !== ""){
+            if (clientEmail !== "undefined" && clientEmail !== "") {
                 const getBranch = await client.query(`SELECT * FROM sucursales WHERE id = $1`, [branchId])
                 const branchName = getBranch.rows[0].nombre
                 const subject = `Bienvenido a FynkApp – Automación de Deudas en ${branchName}`
@@ -500,11 +501,11 @@ app.post("/save-client", upload.none(), async (req, res) => {
                     </body>
                     </html>
                     `;
-                    const resultSendEmail = await sendEmail(clientEmail, subject, message)
-                    if (!resultSendEmail) {
-                        await client.query("ROLLBACK");
-                        return res.status(500).json({ msg: "Error interno del servidor. Por favor, intente nuevamente más tarde." });
-                    }
+                const resultSendEmail = await sendEmail(clientEmail, subject, message)
+                if (!resultSendEmail) {
+                    await client.query("ROLLBACK");
+                    return res.status(500).json({ msg: "Error interno del servidor. Por favor, intente nuevamente más tarde." });
+                }
             }
             await client.query("COMMIT");
             return res.status(200).json({ msg: "Cliente creado!" });
@@ -518,7 +519,7 @@ app.post("/save-client", upload.none(), async (req, res) => {
                 clientDni,
                 clientId
             ])
-            
+
             if (response.rowCount > 0) {
                 await client.query("COMMIT")
                 return res.status(200).json({ msg: "Datos del cliente actualizados." })
@@ -737,146 +738,47 @@ app.put("/assign-branch", async (req, res) => {
     }
 });
 
-app.get("/get-client-account", async (req, res) => {
-    const { branchId, clientId } = req.query;
+app.use("/clients", clientsRoutes)
 
-    if (!branchId || !clientId) {
-        return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." });
-    }
-
-    const getQuery1 = `SELECT * FROM deudas WHERE cliente_id = $1 AND sucursal_id = $2`;
-    const getQuery2 = `SELECT * FROM entregas WHERE cliente_id = $1 AND sucursal_id = $2`;
-    const getDescriptionsQuery = `
-        SELECT id, texto 
-        FROM descripciones_deudas 
-        WHERE id = ANY($1::int[])
-    `;
-
-    const getAdministradoresQuery = `
-        SELECT nombre_usuario,id FROM administradores WHERE id = ANY($1::int[])
-    `
-    const getUsersQuery = `
-        SELECT user_name,id FROM usuarios_asociados WHERE id = ANY($1::int[])
-    `
-
-    let client;
-    try {
-        client = await clientDb.connect();
-        
-        const [deudasResult, entregasResult] = await Promise.all([
-            client.query(getQuery1, [clientId, branchId]),
-            client.query(getQuery2, [clientId, branchId])
-        ]);
-
-        const deudas = deudasResult.rows;
-        const entregas = entregasResult.rows;
-
-        const totalDeudas = deudas.reduce((acc,deuda)=> {
-            return acc + parseFloat(deuda.monto_total)
-        },0)
-        const totalEntregas = entregas.reduce((acc, entrega) => {
-            console.log(entrega)
-            return acc + parseFloat(entrega.monto)
-        },0)
-
-        const subTotal = parseFloat(totalDeudas - totalEntregas).toLocaleString("es-AR",{style:"currency", "currency": "ARS"})
-
-
-        if (deudas.length > 0) {
-            const descripcionIds = deudas.map(deuda => deuda.descripcion_id).filter(Boolean);
-            const adminsIDs = deudas.map(deuda => deuda.administrador_id).filter(Boolean);
-            const usersIDs = deudas.map(deuda => deuda.user_id).filter(Boolean);
-
-            const [descriptionsResult, administradoresResult, usuariosResult] = await Promise.all([
-                client.query(getDescriptionsQuery, [descripcionIds]),
-                client.query(getAdministradoresQuery, [adminsIDs]),
-                client.query(getUsersQuery, [usersIDs])
-            ]);
-
-            const descriptionsMap = descriptionsResult.rows.reduce((map, desc) => {
-                map[desc.id] = desc.texto;
-                return map;
-            }, {});
-
-            const administradoresMap = administradoresResult.rows.reduce((map, admin)=> {
-                map[admin.id] = admin.nombre_usuario;
-                return map
-            },{})
-
-            const usuariosMap = usuariosResult.rows.reduce((map, user) => {
-                map[user.id] = user.user_name;
-                return map
-            },{})
-
-            
-
-            deudas.forEach(deuda => {
-                deuda.descripcion = descriptionsMap[deuda.descripcion_id] || null;
-                if(deuda.administrador_id) deuda.responsable = administradoresMap[parseInt(deuda.administrador_id)] || null;
-                if(deuda.user_id) deuda.responsable = usuariosMap[parseInt(deuda.user_id)] || null;
-                
-            });
-console.log(subTotal)
-            return res.status(200).json({ 
-                msg: "Cliente obtenido!", 
-                debts: deudas, 
-                delivers: entregas,
-                totalAccount: subTotal
-            });
-        }
-
-        return res.status(404).json({ 
-            msg: "Este cliente no tiene deudas o una cuenta asociada a esta sucursal." 
-        });
-    } catch (error) {
-        console.error(error);
-        return res.status(500).json({
-            msg: "Error interno del servidor. Por favor, intente nuevamente más tarde."
-        });
-    } finally {
-        if (client) client.release();
-    }
-});
-
-app.post("/save-debt",upload.none(), async(req,res)=> {
+app.post("/save-debt", upload.none(), async (req, res) => {
     const { clientID, branchID, adminID, userID, productDetails, productsArray, debtDate, debtAmount } = req.body
-    if(!productsArray || !debtDate || !debtAmount || !clientID || !branchID) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." })
-    console.log("adminid: ",adminID, "userid: ", userID)
+    if (!productsArray || !debtDate || !debtAmount || !clientID || !branchID) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." })
+    console.log("adminid: ", adminID, "userid: ", userID)
     const query1 = `INSERT INTO descripciones_deudas(texto) VALUES ($1) RETURNING id`
     const query2 = `INSERT INTO deudas
     (cliente_id, sucursal_id, administrador_id, user_id, descripcion_id, detalle_productos, fecha_compra, vencimiento, monto_total)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) `
-    
+
     let client;
     try {
         client = await clientDb.connect()
         await client.query("BEGIN")
-        const response = await client.query(query1,[productDetails || "Sin descripción"])
+        const response = await client.query(query1, [productDetails || "Sin descripción"])
 
-        if(response.rowCount === 0){
+        if (response.rowCount === 0) {
             await client.query("ROLLBACK")
-            return res.status(400).json({msg: "Ocurrió un error inesperado al intentar guardar la deuda"})
+            return res.status(400).json({ msg: "Ocurrió un error inesperado al intentar guardar la deuda" })
         }
 
         const descriptionID = response.rows[0].id
-        const response2 = await client.query(query2, [clientID, 
-            branchID, 
-            adminID && adminID.trim() !== "" ? adminID : null, 
-            userID && userID.trim() !== "" ? userID : null , 
-            descriptionID, 
-            productsArray, 
-            debtDate, 
-            dayjs(debtDate).add(1, "month"), 
+        const response2 = await client.query(query2, [clientID,
+            branchID,
+            adminID && adminID.trim() !== "" ? adminID : null,
+            userID && userID.trim() !== "" ? userID : null,
+            descriptionID,
+            productsArray,
+            debtDate,
+            dayjs(debtDate).add(1, "month"),
             debtAmount
         ])
 
-        if(response2.rowCount === 0){
+        if (response2.rowCount === 0) {
             await client.query("ROLLBACK")
-            return res.status(400).json({msg: "Ocurrido un error inesperado al intentar guardar la deuda"})
+            return res.status(400).json({ msg: "Ocurrido un error inesperado al intentar guardar la deuda" })
         }
 
         await client.query("COMMIT")
-        return res.status(200).json({msg: `Deuda guardada exitosamente, próximo vencimiento el ${dayjs(debtDate).add(1, "month").format("DD/MM/YYYY")}`})
+        return res.status(200).json({ msg: `Deuda guardada exitosamente, próximo vencimiento el ${dayjs(debtDate).add(1, "month").format("DD/MM/YYYY")}` })
     } catch (error) {
         console.log(error)
         await client.query("ROLLBACK")
@@ -886,9 +788,9 @@ app.post("/save-debt",upload.none(), async(req,res)=> {
     }
 });
 
-app.post("/save-deliver",upload.none(), async(req,res)=> {
+app.post("/save-deliver", upload.none(), async (req, res) => {
     const { clientID, branchID, adminID, userID, deliverDate, deliverAmount } = req.body
-    if(!clientID || !branchID || !deliverAmount || !deliverDate) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." })
+    if (!clientID || !branchID || !deliverAmount || !deliverDate) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." })
 
     const query1 = `INSERT INTO entregas(cliente_id, sucursal_id, administrador_id, user_id, fecha, monto) VALUES ($1, $2, $3, $4, $5, $6)`
     const query2 = `UPDATE deudas SET vencido = $1 WHERE cliente_id = $2 AND sucursal_id = $3`
@@ -896,36 +798,64 @@ app.post("/save-deliver",upload.none(), async(req,res)=> {
     try {
         client = await clientDb.connect()
         await client.query("BEGIN")
-        const response = await client.query(query1, 
+        const response = await client.query(query1,
             [
-                clientID, 
-                branchID, 
-                adminID && adminID.trim() !== "" ? adminID : null, 
-                userID && userID.trim() !== "" ? userID : null, 
-                deliverDate, 
+                clientID,
+                branchID,
+                adminID && adminID.trim() !== "" ? adminID : null,
+                userID && userID.trim() !== "" ? userID : null,
+                deliverDate,
                 deliverAmount
             ])
-        if(response.rowCount === 0){
+        if (response.rowCount === 0) {
             await client.query("ROLLBACK")
-            return res.status(400).json({msg: "Ocurrido un error inesperado al intentar guardar la entrega"})
+            return res.status(400).json({ msg: "Ocurrido un error inesperado al intentar guardar la entrega" })
         }
 
         const response2 = await client.query(query2, [false, clientID, branchID])
-        if(response2.rowCount === 0){
+        if (response2.rowCount === 0) {
             await client.query("ROLLBACK")
-            return res.status(400).json({msg: "Ocurrido un error inesperado al intentar guardar la entrega"})
-        }  
+            return res.status(400).json({ msg: "Ocurrido un error inesperado al intentar guardar la entrega" })
+        }
         await client.query("COMMIT")
-        return res.status(200).json({msg: "Entrega guardada exitosamente"})
+        return res.status(200).json({ msg: "Entrega guardada exitosamente" })
     } catch (error) {
         console.log(error)
         await client.query("ROLLBACK")
         return res.status(500).json({
             msg: "Error interno del servidor. Por favor, intente nuevamente más tarde."
         });
-    }finally{
-        if(client) client.release()
+    } finally {
+        if (client) client.release()
     }
+});
+
+app.delete("/delete-debt/:debtId", async (req, res) => {
+    const { debtId } = req.params
+    if (!debtId) return res.status(400).json({ msg: "El servidor no recibió correctamente algunos datos." })
+
+    let client = await clientDb.connect()
+    try {
+        await client.query("BEGIN")
+        const response = await client.query(`DELETE FROM deudas WHERE id = $1`, [debtId])
+        if (response.rowCount === 0) {
+            await client.query("ROLLBACK")
+            return res.status(400).json({ msg: "Ocurrido un error inesperado al intentar eliminar la deuda" })
+        }
+        await client.query("COMMIT")
+        return res.status(200).json({ msg: "Deuda eliminada exitosamente" })
+    } catch (error) {
+        console.log(error)
+        await client.query("ROLLBACK")
+        return res.status(500).json({
+            msg: "Error interno del servidor. Por favor, intente nuevamente más tarde."
+        });
+    } finally {
+        if (client) {
+            client.release()
+        }
+    }
+
 })
 
 cron.schedule("*/30 * * * *", async () => {
